@@ -1,16 +1,10 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Aug 26 15:38:12 2025
-
-@author: olve
-"""
-
 import asyncio
 from telethon import TelegramClient
 import re
 from datetime import datetime
 import pandas as pd
 import os
+import json
 
 # --- Налаштування Telegram API ---
 API_ID = 28827902
@@ -24,16 +18,17 @@ def parse_daily_report(report_text):
     """
     date_match = re.search(r'Звіт\s+(\d{2}\.\d{2})', report_text)
     if not date_match:
-        return None
+        return None, None
     
     try:
         report_date_str = date_match.group(1) + '.' + str(datetime.now().year)
         report_date = datetime.strptime(report_date_str, '%d.%m.%Y').date()
     except ValueError:
-        return None
+        return None, None
 
     lines = report_text.strip().split('\n')
     data = []
+    summary_data = {}
     
     current_section = "services"
     service_entry = {}
@@ -50,7 +45,8 @@ def parse_daily_report(report_text):
             current_section = "expenses"
             continue
         if "Підсумки дня:" in line:
-            break
+            current_section = "summary"
+            continue
         if "Продаж косметики:" in line:
             current_section = "cosmetics"
             continue
@@ -80,7 +76,9 @@ def parse_daily_report(report_text):
             
             revenue_match = re.search(r'(-?\s*\d+)\s*грн', line)
             if revenue_match and service_entry:
-                service_entry['Revenue'] = int(revenue_match.group(1).replace(' ', ''))
+                revenue_value = int(revenue_match.group(1).replace(' ', ''))
+                # Виправляємо мінусові значення доходу
+                service_entry['Revenue'] = abs(revenue_value)
                 continue
             
             payment_match = re.search(r'\((Готівка|Карта)\)', line)
@@ -98,16 +96,17 @@ def parse_daily_report(report_text):
             revenue_match = re.search(r'(-?\s*\d+)\s*грн', line)
             payment_match = re.search(r'\((\w+)\)', line)
             if revenue_match and payment_match:
+                revenue_value = int(revenue_match.group(1).replace(' ', ''))
                 data.append({
                     'Date': report_date,
                     'Section': 'Certificate Sale',
                     'Client': None,
                     'Master': None,
                     'Service': line.split('-')[0].strip(),
-                    'Revenue': int(revenue_match.group(1).replace(' ', '')),
+                    'Revenue': abs(revenue_value),
                     'PaymentMethod': payment_match.group(1).strip()
                 })
-
+        
         if current_section == "cosmetics":
             revenue_match = re.search(r'(-?\s*\d+)\s*грн', line)
             payment_match = re.search(r'\((\w+)\)', line)
@@ -118,15 +117,35 @@ def parse_daily_report(report_text):
                     'Client': None,
                     'Master': None,
                     'Service': line.split('-')[0].strip(),
-                    'Revenue': int(revenue_match.group(1).replace(' ', '')),
+                    'Revenue': abs(int(revenue_match.group(1).replace(' ', ''))),
                     'PaymentMethod': payment_match.group(1).strip()
                 })
-    
+        
+        if current_section == "expenses":
+            revenue_match = re.search(r'(-?\s*\d+)\s*грн', line)
+            if revenue_match:
+                data.append({
+                    'Date': report_date,
+                    'Section': 'Expenses',
+                    'Client': None,
+                    'Master': None,
+                    'Service': line.split('-')[0].strip(),
+                    'Revenue': int(revenue_match.group(1).replace(' ', '')),
+                    'PaymentMethod': None
+                })
+        
+        if current_section == "summary":
+            summary_match = re.search(r'(.+):\s*(-?\s*\d+)\s*грн', line)
+            if summary_match:
+                key = summary_match.group(1).strip()
+                value = int(summary_match.group(2).replace(' ', ''))
+                summary_data[key] = value
+
     df = pd.DataFrame(data)
     if 'Service' in df:
         df['Service'] = df['Service'].apply(lambda x: ' / '.join(x) if isinstance(x, list) else x)
     
-    return df
+    return df, summary_data
 
 # --- Основна асинхронна функція для збору даних ---
 async def main():
@@ -157,15 +176,23 @@ async def main():
         async for message in client.iter_messages(CHANNEL_ID):
             if message.text and "Звіт" in message.text and re.search(r'\d{2}\.\d{2}', message.text):
                 try:
-                    daily_df = parse_daily_report(message.text)
+                    daily_df, daily_summary = parse_daily_report(message.text)
                     if daily_df is not None and not daily_df.empty:
                         with open('all_reports.csv', 'a', encoding='utf-8-sig') as f:
                             daily_df.to_csv(f, header=f.tell()==0, index=False)
+                        
+                        # Зберігаємо підсумкові дані в JSON
+                        if daily_summary:
+                            with open('summary.json', 'w', encoding='utf-8') as f:
+                                json.dump(daily_summary, f, ensure_ascii=False, indent=4)
+                        
                         reports_found += 1
                 except Exception as e:
                     print(f"Помилка при обробці звіту від {message.date}: {e}")
         
         print(f"\n✅ Завершено. Знайдено та збережено {reports_found} звітів у файл 'all_reports.csv'.")
+        if os.path.exists('summary.json'):
+            print("✅ Підсумкові дані збережено у файл 'summary.json'.")
     
     except Exception as e:
         print(f"❌ Критична помилка: {e}")
