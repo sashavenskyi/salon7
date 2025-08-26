@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Aug 26 16:17:26 2025
-
-@author: olve
-"""
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -27,22 +20,27 @@ def load_data(file_path):
         st.error(f"Помилка при завантаженні файлу: {e}")
         return pd.DataFrame()
 
-# Завантаження підсумкових даних
+# Завантаження підсумкових даних з усіх файлів
 @st.cache_data
-def load_summary(file_path):
-    if not os.path.exists(file_path):
-        st.warning("Файл з підсумковими даними не знайдено. Будь ласка, запустіть скрипт збору даних.")
-        return {}
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        st.error(f"Помилка при завантаженні підсумкових даних: {e}")
-        return {}
+def load_all_summaries(folder_path):
+    summary_data = []
+    for file_name in os.listdir(folder_path):
+        if file_name.startswith('summary_') and file_name.endswith('.json'):
+            file_path = os.path.join(folder_path, file_name)
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    date_str = file_name.replace('summary_', '').replace('.json', '')
+                    data['Date'] = pd.to_datetime(date_str)
+                    summary_data.append(data)
+            except Exception as e:
+                st.warning(f"Помилка при завантаженні файлу {file_name}: {e}")
+    return pd.DataFrame(summary_data)
+
 
 # Завантажуємо дані
 df = load_data('all_reports.csv')
-summary_data = load_summary('summary.json')
+summary_df = load_all_summaries('.')
 
 if not df.empty:
     df['Date'] = pd.to_datetime(df['Date'])
@@ -50,25 +48,26 @@ if not df.empty:
     st.title("Аналіз звітів з Telegram-каналу")
     st.markdown("---")
 
-    # Фінансовий підсумок дня
-    st.header("Фінансовий підсумок дня")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    total_revenue = df[df['Revenue'] > 0]['Revenue'].sum()
-    total_expenses = df[df['Revenue'] < 0]['Revenue'].sum()
-    
-    col1.metric("Загальний дохід", f"{total_revenue:,.0f} грн")
-    col2.metric("Загальні витрати", f"{total_expenses:,.0f} грн")
-    col3.metric("Всього за день (чистий дохід)", f"{total_revenue + total_expenses:,.0f} грн")
-    
-    st.markdown("---")
-
-    # Відображення підсумкових даних з файлу
-    if summary_data:
-        st.subheader("Показники з файлу звіту")
-        st.json(summary_data)
+    # Відображення підсумків у вигляді таблиці
+    if not summary_df.empty:
+        st.header("Фінансові підсумки")
+        summary_df['Date'] = pd.to_datetime(summary_df['Date'])
+        summary_df.set_index('Date', inplace=True)
+        st.dataframe(summary_df.sort_index(ascending=False).T.style.format("{:,.0f} грн"))
         st.markdown("---")
+
+    # Фінансовий підсумок дня
+    if not summary_df.empty:
+        st.header("Останній фінансовий звіт")
+        latest_summary = summary_df.iloc[-1].T
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("Залишок, який був", f"{latest_summary.get('Залишок який був', 0):,.0f} грн")
+        col2.metric("Всього за день", f"{latest_summary.get('Всього за день', 0):,.0f} грн")
+        col3.metric("Залишок в сейфі", f"{latest_summary.get('Залишок в сейфі', 0):,.0f} грн")
+        
+        st.markdown("---")
+
 
     # Фільтри
     st.sidebar.header("Фільтри")
@@ -88,7 +87,7 @@ if not df.empty:
         
         # Аналіз доходів за майстрами
         st.header("Дохід за майстрами")
-        master_revenue = filtered_df.groupby('Master')['Revenue'].sum().sort_values(ascending=False)
+        master_revenue = filtered_df[filtered_df['Section'] != 'Expenses'].groupby('Master')['Revenue'].sum().sort_values(ascending=False)
         fig, ax = plt.subplots()
         sns.barplot(x=master_revenue.index, y=master_revenue.values, ax=ax)
         plt.xticks(rotation=45, ha='right')
@@ -99,7 +98,7 @@ if not df.empty:
         
         # Аналіз доходів за послугами
         st.header("Дохід за послугами")
-        service_revenue = filtered_df.groupby('Service')['Revenue'].sum().sort_values(ascending=False).head(10)
+        service_revenue = filtered_df[filtered_df['Section'] != 'Expenses'].groupby('Service')['Revenue'].sum().sort_values(ascending=False).head(10)
         fig, ax = plt.subplots()
         sns.barplot(x=service_revenue.index, y=service_revenue.values, ax=ax)
         plt.xticks(rotation=90, ha='right')
