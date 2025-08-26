@@ -50,6 +50,9 @@ def parse_daily_report(report_text):
         if "Продаж косметики:" in line:
             current_section = "cosmetics"
             continue
+        if "На рахунок :" in line:
+            current_section = "on_account"
+            continue
 
         if current_section == "services":
             time_match = re.match(r'(\d{1,2}:\d{2})\s(.+)', line)
@@ -70,6 +73,9 @@ def parse_daily_report(report_text):
             master_match = re.search(r'\((\w+)\)$', line)
             if master_match and service_entry:
                 service_entry['Master'] = master_match.group(1).strip()
+                if service_entry['Revenue'] is None:
+                    # Послуга по сертифікату або курсу без оплати
+                    service_entry['Revenue'] = 0
                 data.append(service_entry)
                 service_entry = {}
                 continue
@@ -77,7 +83,6 @@ def parse_daily_report(report_text):
             revenue_match = re.search(r'(-?\s*\d+)\s*грн', line)
             if revenue_match and service_entry:
                 revenue_value = int(revenue_match.group(1).replace(' ', ''))
-                # Виправляємо мінусові значення доходу
                 service_entry['Revenue'] = abs(revenue_value)
                 continue
             
@@ -100,7 +105,7 @@ def parse_daily_report(report_text):
                 data.append({
                     'Date': report_date,
                     'Section': 'Certificate Sale',
-                    'Client': None,
+                    'Client': line.split('-')[0].strip(),
                     'Master': None,
                     'Service': line.split('-')[0].strip(),
                     'Revenue': abs(revenue_value),
@@ -131,6 +136,20 @@ def parse_daily_report(report_text):
                     'Master': None,
                     'Service': line.split('-')[0].strip(),
                     'Revenue': int(revenue_match.group(1).replace(' ', '')),
+                    'PaymentMethod': None
+                })
+        
+        if current_section == "on_account":
+            revenue_match = re.search(r'(-?\s*\d+)\s*грн', line)
+            if revenue_match:
+                revenue_value = int(revenue_match.group(1).replace(' ', ''))
+                data.append({
+                    'Date': report_date,
+                    'Section': 'On Account',
+                    'Client': line.split(' -')[0].strip(),
+                    'Master': None,
+                    'Service': line,
+                    'Revenue': abs(revenue_value),
                     'PaymentMethod': None
                 })
         
@@ -183,7 +202,8 @@ async def main():
                         
                         # Зберігаємо підсумкові дані в JSON
                         if daily_summary:
-                            with open('summary.json', 'w', encoding='utf-8') as f:
+                            summary_file_path = f"summary_{daily_df['Date'].iloc[0]}.json"
+                            with open(summary_file_path, 'w', encoding='utf-8') as f:
                                 json.dump(daily_summary, f, ensure_ascii=False, indent=4)
                         
                         reports_found += 1
@@ -191,8 +211,7 @@ async def main():
                     print(f"Помилка при обробці звіту від {message.date}: {e}")
         
         print(f"\n✅ Завершено. Знайдено та збережено {reports_found} звітів у файл 'all_reports.csv'.")
-        if os.path.exists('summary.json'):
-            print("✅ Підсумкові дані збережено у файл 'summary.json'.")
+        print("✅ Підсумкові дані збережено в окремих файлах 'summary_...json'.")
     
     except Exception as e:
         print(f"❌ Критична помилка: {e}")
